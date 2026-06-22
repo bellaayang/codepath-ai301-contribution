@@ -137,7 +137,8 @@ Using UMPIRE framework (adapted):
 
 ### Week [X] Progress
 
-[What you built this week, challenges faced, decisions made]
+Removed unused legacy OWASP Encoder taglib declarations (<%@ taglib uri="owasp.encoder.jakarta.advanced" prefix="e" %>) and unused Encode imports (<%@ page import="org.owasp.encoder.Encode" %>) from 19 JSP files in the appointment/ and schedule/ directories. These files had already been migrated to use the null-safe CARLOS wrappers (<carlos:encode>, SafeEncode.*), but the legacy declarations were left in place as dead code.
+
 
 ### Week [Y] Progress
 
@@ -153,7 +154,7 @@ Using UMPIRE framework (adapted):
 
 ## Pull Request
 
-**PR Link:** [GitHub PR URL when submitted]
+**PR Link:** https://github.com/carlos-emr/carlos/pull/2910
 
 **PR Description:** [Draft or final PR description - much of the content above can be adapted]
 
