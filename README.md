@@ -1,9 +1,9 @@
 # Contribution [#]: [Issue Title]
 
-**Contribution Number:** [1 / 2 / 3]  
-**Student:** [Your Name]  
+**Contribution Number:** 1  
+**Student:** Jinghan Yang 
 **Issue:** https://github.com/carlos-emr/carlos/issues/2680 
-**Status:** Phase 2 Complete
+**Status:** Phase IV marked complete
 
 ---
 
@@ -162,7 +162,7 @@ Removed unused legacy OWASP Encoder taglib declarations (<%@ taglib uri="owasp.e
 - [Date]: [Summary of feedback received]
 - [Date]: [How you addressed it]
 
-**Status:** [Awaiting review / Iterating / Approved / Merged]
+**Status:**  Merged
 
 ---
 
