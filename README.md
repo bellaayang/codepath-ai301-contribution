@@ -187,3 +187,155 @@ Removed unused legacy OWASP Encoder taglib declarations (<%@ taglib uri="owasp.e
 - [Link to helpful documentation]
 - [Tutorial or Stack Overflow post that helped]
 - [GitHub issues or discussions that helped]
+
+
+---
+
+**Contribution Number:** 2
+**Student:** Jinghan Yang
+**Issue:** https://github.com/carlos-emr/carlos/issues/2598
+**Status:** PR submitted, awaiting review
+
+---
+
+## Why I Chose This Issue
+
+I chose this issue because it required methodical code reading across many files rather than mechanical find-and-replace. Each file needed individual verification — I had to check the nearby `securityInfoManager.hasPrivilege()` call to confirm the correct object name before updating the message, rather than blindly substituting text. This made it a good exercise in reading unfamiliar Java code carefully.
+
+The underlying context is also meaningful: consistent exception messages matter for log monitoring and security auditing. When every `SecurityException` follows the same canonical format, automated tools and human reviewers can reliably detect and filter authorization failures. Understanding *why* the format is enforced, not just *what* to change, made this feel like real security work rather than cleanup.
+
+---
+
+## Understanding the Issue
+
+### Problem Description
+
+Multiple action classes across the encounter, case management, and measurement admin modules throw `SecurityException` with non-canonical message formats. CLAUDE.md mandates the format `missing required sec object (_objectname)`, but various files used `"missing required security object"` (spelled out), missing parentheses, colon separators instead of parentheses, missing object names entirely, or placeholder strings like `"Access Denied!"`.
+
+### Expected Behavior
+
+All `SecurityException` messages in the affected files should follow the canonical format:
+```
+missing required sec object (_objectname)
+```
+where `_objectname` matches the object name used in the nearby `hasPrivilege()` check.
+
+### Current Behavior
+
+Non-canonical variants found:
+- `"missing required security object (_demographic)"` — "security" not abbreviated to "sec"
+- `"missing required security object: _newCasemgmt.templates"` — colon instead of parentheses
+- `"missing required security object"` — missing object name entirely
+- `"missing required security object _admin.consult"` — no parentheses
+- `"Access Denied!"` — placeholder with a comment acknowledging the correct form
+
+### Affected Components
+
+- `casemgmt/web/ClientImage2Action.java`
+- `casemgmt/web/CaseManagementEntry2Action.java`
+- `encounter/pageUtil/EctInsertTemplate2Action.java`
+- `encounter/oscarConsultationRequest/config/pageUtil/ConsultationLookup2Action.java`
+- `encounter/oscarConsultationRequest/config/pageUtil/CpsoSearch2Action.java`
+- `encounter/oscarConsultationRequest/pageUtil/ConsultationClinicalData2Action.java`
+- `encounter/oscarMeasurements/pageUtil/EctSetupAddMeasurementStyleSheet2Action.java`
+- 15 measurement admin actions in `encounter/oscarMeasurements/pageUtil/` using `"Access Died!"`
+
+---
+
+## Reproduction Process
+
+### Environment Setup
+
+Same devcontainer setup as Contribution #1.
+
+### Steps to Reproduce
+
+1. Search the codebase for `"missing required security object"` — non-canonical messages are visible immediately
+2. Search for `"Access Died!"` in `oscarMeasurements/pageUtil/` — 15 files with placeholder messages
+
+### Reproduction Evidence
+
+Verified with:
+```bash
+grep -rn "missing required security object" src/main/java/io/github/carlos_emr/carlos/
+grep -rn "Access Died!" src/main/java/io/github/carlos_emr/carlos/encounter/oscarMeasurements/pageUtil/
+```
+
+---
+
+## Solution Approach
+
+### Analysis
+
+The root cause is inconsistency during original development — different developers wrote the exception messages in different styles, and some used placeholder strings with comments acknowledging the correct form but never implementing it.
+
+### Proposed Solution
+
+For each affected file:
+1. Locate the nearby `securityInfoManager.hasPrivilege(...)` call to identify the correct object name
+2. Rewrite the `SecurityException` message to match the canonical format exactly
+
+### Implementation Plan
+
+**Understand:** The canonical format is `missing required sec object (_objectname)`. The object name must come from the `hasPrivilege()` call in the same method, not guessed.
+
+**Match:** Three fix patterns:
+- `"missing required security object (X)"` → `"missing required sec object (X)"` (abbreviate "security")
+- `"missing required security object: X"` or `"missing required security object X"` → `"missing required sec object (X)"` (fix separator + add parens)
+- `"Access Died!"` → `"missing required sec object (_admin)"` (replace placeholder; confirmed `_admin` from `hasPrivilege`)
+
+**Plan:**
+1. Use VSCode global search-replace for the `(_demographic)` pattern (3 files)
+2. Manually fix `EctInsertTemplate2Action` (colon → parens)
+3. Manually fix `ConsultationLookup2Action`, `CpsoSearch2Action`, `ConsultationClinicalData2Action` (verify object name from `hasPrivilege` first)
+4. Global replace `"Access Died!"` in `oscarMeasurements/pageUtil/` (all 15 confirmed `_admin`)
+5. Verify with `grep -rn "missing required security object"` — no in-scope files should remain
+
+**Implement:** Branch `fix-issue-2598`
+
+**Review:** Checked each file's `hasPrivilege` call before substituting to ensure object name accuracy
+
+**Evaluate:** Final grep confirmed no in-scope files contain non-canonical messages
+
+---
+
+## Testing Strategy
+
+### Manual Testing
+
+Ran grep verification before and after each batch of changes to confirm correctness. No functional logic was modified, so no behavioral tests are needed.
+
+---
+
+## Implementation Notes
+
+Updated 23 files total: standardized "security object" → "sec object" abbreviation, fixed colon/missing-parens variants, and replaced 15 `"Access Died!"` placeholders with the correct canonical message using `_admin` confirmed from each file's `hasPrivilege()` call.
+
+---
+
+## Pull Request
+
+**PR Link:** https://github.com/carlos-emr/carlos/pull/3119#pullrequestreview-4628682638
+
+**PR Description:** Standardizes non-canonical SecurityException messages to `missing required sec object (_objectname)` format across encounter and case management action classes, per CLAUDE.md. Covers the files called out in the issue and audit comments.
+
+**Status:** Submitted, awaiting review
+
+---
+
+## Learnings & Reflections
+
+### Technical Skills Gained
+
+- Reading Java Struts2 action classes and understanding the security check pattern
+- Using `grep` and VSCode global search to audit large codebases efficiently
+- Understanding why consistent exception message formats matter for security monitoring
+
+### Challenges Overcome
+
+- Needed to verify each file's `hasPrivilege()` call individually to confirm the correct object name rather than blindly replacing
+- Identified and reverted two out-of-scope files that were caught by the global replace
+
+### What I'd Do Differently Next Time
+
+Run `git diff --name-only` before committing to catch any unintended file modifications earlier in the process.
