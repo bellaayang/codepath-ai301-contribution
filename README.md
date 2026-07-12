@@ -191,7 +191,7 @@ Removed unused legacy OWASP Encoder taglib declarations (<%@ taglib uri="owasp.e
 
 ---
 
-**Contribution Number:** 2
+### **Contribution Number:** 2
 **Student:** Jinghan Yang
 **Issue:** https://github.com/carlos-emr/carlos/issues/2598
 **Status:** PR submitted, awaiting review
@@ -329,7 +329,8 @@ Updated 23 files total: standardized "security object" → "sec object" abbrevia
 
 - Reading Java Struts2 action classes and understanding the security check pattern
 - Using `grep` and VSCode global search to audit large codebases efficiently
-- Understanding why consistent exception message formats matter for security monitoring
+- Understanding why consistent exception message formats matter for security mo
+nitoring
 
 ### Challenges Overcome
 
@@ -339,3 +340,70 @@ Updated 23 files total: standardized "security object" → "sec object" abbrevia
 ### What I'd Do Differently Next Time
 
 Run `git diff --name-only` before committing to catch any unintended file modifications earlier in the process.
+
+
+### Contribution Number: 3
+Student: Jinghan Yang
+Issue: https://github.com/carlos-emr/carlos/issues/3108#issuecomment-4904716881
+Status: Phase 1
+
+### Why I Chose This Issue
+
+I chose this issue because it involves an important security and architecture improvement in CARLOS EMR. The original implementation allowed a fax-sending operation to live inside a PDF-generation servlet, which made the code harder to reason about and created a risk that a state-changing operation could be triggered through an unsafe HTTP method. This issue gave me a chance to understand how CARLOS EMR separates read-only PDF rendering from mutating actions, how Struts `*2Action` classes are used as safer HTTP boundaries, and how security-related tests enforce GET/HEAD rejection for mutating workflows.
+
+### Understanding the Issue
+
+#### Problem Description
+
+`FrmCustomedPDFServlet` was responsible for creating customized prescription PDFs. However, it also contained a special `oscarRxFax` branch that performed fax-related side effects: generating and writing prescription PDF files, writing fax tracking files, persisting `FaxJob` records, and logging fax activity.
+
+The problem was that the servlet overrides `service(...)`, so GET and POST requests were handled the same way. This meant a GET request to `/form/createcustomedpdf` with `__method=oscarRxFax` could trigger fax side effects. Since this servlet was not a Struts `*2Action`, it was not protected by the existing mutator GET/HEAD rejection contract test.
+
+#### Expected Behavior
+
+The prescription fax workflow should only be available through a mutating POST-only endpoint. GET and HEAD requests should be rejected before any side effects happen.
+
+An authenticated user must have the required `_rx` write privilege before the system generates the prescription PDF or creates any fax job artifacts.
+
+The PDF servlet should only handle read-only PDF generation and should not create fax files, persist fax jobs, or perform fax logging.
+
+#### Current Behavior
+
+Before the fix, the PDF servlet mixed two responsibilities:
+
+1. Read-only prescription PDF generation.
+2. Mutating prescription fax submission.
+
+Because both paths were reachable through `service(...)`, the fax mutation could be reached through GET as well as POST. This violated the project’s mutator action safety pattern and made the endpoint invisible to the existing `MutatorActionGetRejectionContractTest`.
+
+#### Affected Components
+
+- `FrmCustomedPDFServlet`
+  - Removed the legacy `oscarRxFax` mutation branch so the servlet only generates PDFs.
+
+- `PrescriptionPdfComposer`
+  - Extracted prescription PDF composition logic out of the servlet.
+
+- `PrescriptionFaxService`
+  - Extracted fax file creation, fax tracking file writing, `FaxJob` persistence, and fax logging into a dedicated service.
+  - Added stronger validation before filesystem or DAO side effects.
+
+- `RxFaxPrescription2Action`
+  - Added a new POST-only Struts action for the Rx fax mutation.
+  - Enforces method, authentication, and `_rx` write privilege checks before side effects.
+
+- `ViewScript2.jsp`
+  - Routed Rx fax submissions to the new Struts action endpoint.
+
+- `struts-prescription.xml`
+  - Registered the new Rx fax action route.
+
+- `MutatorActionGetRejectionContractTest`
+  - Registered the new action so GET/HEAD rejection is covered by the project-wide mutator contract.
+
+- `RxFaxPrescription2ActionTest`
+  - Added focused unit tests for method rejection, authorization failure, validation failure, and successful fax job creation.
+
+- `PrescriptionFaxServiceTest`
+  - Added tests for fax file handling, PDF id validation, fax config matching, and avoiding file artifacts when validation fails.
+
