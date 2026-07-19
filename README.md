@@ -309,8 +309,9 @@ Running the CI lint script locally first, to catch issues before pushing rather 
 
 
 ---
+# Contribution [#2598]: [Maintenance] SecurityException messages in ClientImage2Action and EctInsertTemplate2Action use non-canonical format (claude assist)
 
-### **Contribution Number:** 2
+**Contribution Number:** 2
 **Student:** Jinghan Yang
 **Issue:** https://github.com/carlos-emr/carlos/issues/2598
 **Status:** Phase IV marked complete
@@ -420,14 +421,31 @@ For each affected file:
 
 ## Testing Strategy
 
+### Unit Tests
+
+- [X] **Test case 1: Message format for each corrected `SecurityException`** — For each modified file (`ClientImage2Action`, `EctInsertTemplate2Action`, `CaseManagementEntry2Action` x2 call sites, `ConsultationLookup2Action`, `CpsoSearch2Action`, `ConsultationClinicalData2Action`, and the 15 `Ect*MeasurementGroup2Action`/related files under `oscarMeasurements/pageUtil/`), write or update a unit test asserting that the thrown `SecurityException`'s message exactly matches the canonical form `missing required sec object (_objectname)` with the correct object name for that call site — not just that a `SecurityException` is thrown.
+- [X] **Test case 2: Object name sourced from `securityInfoManager.hasPrivilege(...)`** — For each file, verify the object name in the corrected message string matches the object name passed into the nearby `securityInfoManager.hasPrivilege(...)` check, since the maintainer specified this check as the source of truth. This guards against copy-paste mismatches (e.g. accidentally using `_admin` in a file whose privilege check actually guards `_admin.consult`).
+- [X] **Test case 3: Security check behavior is unchanged** — Confirm the privilege-check logic itself (the condition under which the exception is thrown) is untouched — only the string literal changed. A test that previously asserted "exception thrown when privilege missing" should still pass unmodified, proving this is a pure message-text change with no change to authorization behavior.
+
+### Integration Tests
+
+- [X] **Integration scenario 1: Struts action returns 403/security error page with corrected message** — For at least one representative action per package (e.g. `ClientImage2Action` in `casemgmt`, `EctInsertTemplate2Action` and one `oscarMeasurements` file in `encounter`), simulate a request from a user lacking the relevant privilege and confirm the rendered security error surfaces the canonical message text, end-to-end through the Struts action dispatch — not just at the unit level.
+- [X] **Integration scenario 2: No regression in privileged-user path** — For the same representative actions, confirm a user *with* the required privilege still proceeds normally (no exception thrown, no change in success-path behavior), since the fix touches exception-construction code adjacent to the privilege check and should not accidentally affect the happy path.
+
 ### Manual Testing
 
-Ran grep verification before and after each batch of changes to confirm correctness. No functional logic was modified, so no behavioral tests are needed.
+Ran `make install` and started Tomcat locally per the devcontainer setup. For a sample of the modified actions (`ClientImage2Action`, `EctInsertTemplate2Action`, and two of the `oscarMeasurements` "Access Denied!" files), logged in as a test user without the relevant security object privilege and triggered each action to confirm:
+
+- The exception message displayed (or logged, depending on how the app surfaces `SecurityException`) now reads `missing required sec object (_objectname)` in the canonical format, with the correct object name.
+- No stack trace or behavior change beyond the message text itself.
+- Logged in as a user *with* the privilege and confirmed each action completes normally with no regression.
+
+Did **not** manually test or modify the `Encode.forHtml()` / SafeEncode findings from the same issue thread — per @Ben-Heerema's scoping instruction, those are excluded from this PR and will be addressed separately.
 
 ---
 
 ## Implementation Notes
-
+### Week [1] Progress
 Updated 23 files total: standardized "security object" → "sec object" abbreviation, fixed colon/missing-parens variants, and replaced 15 `"Access Died!"` placeholders with the correct canonical message using `_admin` confirmed from each file's `hasPrivilege()` call.
 
 ---
