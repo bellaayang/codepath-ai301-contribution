@@ -1,4 +1,4 @@
-# Contribution [#]: [Issue Title]
+# Contribution [#2680]: [Maintenance] Appointment/schedule JSPs: unused legacy OWASP Encoder taglib declarations and Encode imports (claude assist)
 
 **Contribution Number:** 1  
 **Student:** Jinghan Yang 
@@ -9,11 +9,40 @@
 
 ## Why I Chose This Issue
 
-I chose this issue because it offers a clear, well-scoped entry point into a real production codebase. The task — removing unused legacy OWASP Encoder taglib declarations and imports across JSP files — is straightforward enough for a first contribution, but still requires carefully reading each file to confirm no <e:forXxx> or Encode.forXxx() calls remain before removing the declarations. That kind of methodical, file-by-file verification is good practice for working in an unfamiliar codebase without breaking things.
+**Skill Match:** This issue is well-matched to my current skill level. It involves reading JSP files, identifying taglib declarations (`<%@ taglib %>`) and import statements (`<%@ page import %>`), and confirming — through careful line-by-line review — that no `<e:forXxx>` tags or `Encode.forXxx()` calls remain before removing the corresponding declarations. This is a manageable, well-scoped task for a first contribution: the changes are mechanical in nature, but still require enough JSP/taglib familiarity and attention to detail to avoid breaking a file that still has a live reference.
 
-I also find the underlying context interesting. The project has already migrated to null-safe CARLOS wrappers, and this issue is about cleaning up the leftover artifacts from that migration. Understanding why the old encoder was replaced — and how the new SafeEncode wrappers differ — connects directly to what I'm learning about secure coding practices. It's a low-risk issue with a clear success condition (CI passes), which makes it a good fit for building confidence contributing to open source.
+**Learning Goal:** I wanted a task that would force me to practice methodical, file-by-file verification in an unfamiliar production codebase — checking each of the 18+27 affected locations individually rather than assuming a pattern holds everywhere. This kind of discipline (verify before you delete, don't trust the issue description blindly) is a habit I'm trying to build for future, higher-risk contributions.c
+
+**Understanding:** The project previously used the OWASP Encoder library (`<e:forXxx>` tags and `Encode.forXxx()` calls) for output encoding, but has since migrated to the project's own null-safe CARLOS wrappers (`<carlos:encode>`, `SafeEncode.*`), which handle null values more gracefully than the raw OWASP encoder. This issue is pure cleanup from that migration: the taglib declarations and imports are dead code left behind after the actual encoding calls were already switched over. Understanding *why* the migration happened — and what problem the CARLOS wrappers solve that OWASP Encoder didn't (null-safety) — helped me understand not just what to delete, but why leaving it in place is a minor but real risk (CLAUDE.md's CI lint treats direct `Encode.forXxx()`/`<e:forXxx>` usage as a violation, and stale declarations can create ambiguity about which encoder is "intended" for a file)
 
 ---
+
+### Scope: Files/Modules Involved
+
+This issue touches two JSP module directories:
+
+- **`src/main/webapp/WEB-INF/jsp/appointment/`** — 12 files with unused `<e:>` taglib declarations, 5 files with unused `Encode` imports (some files, like `appointmentgrouprecords.jsp` and `appointmentTypeList.jsp` and `appointmenteditrepeatbooking.jsp`, appear in both lists and need both cleanups).
+- **`src/main/webapp/WEB-INF/jsp/schedule/`** — 6 files with unused `<e:>` taglib declarations, 4 files with unused `Encode` imports (with `scheduleDisplayTemplate.jsp`, `scheduledatepopup.jsp`, and `scheduleflipview.jsp` overlapping between the two lists).
+
+No changes to Java classes, controllers, or the `SafeEncode`/`carlos:encode` implementation itself are expected — this is JSP-directive-only cleanup.
+
+### Related Context
+
+- Issue: [#2680](https://github.com/carlos-emr/carlos/issues/2680), opened by maintainer [@Ben-Heerema](https://github.com/Ben-Heerema).
+- Per the issue description, this is downstream of an earlier (unlinked-here, but referenced) migration effort that introduced the CARLOS `SafeEncode`/`carlos:encode` wrappers as null-safe replacements for OWASP Encoder — that migration is the reason these declarations are now dead code rather than active dependencies.
+- CI enforcement of the `Encode.forXxx()` / `<e:forXxx>` ban is documented in the repo's `CLAUDE.md`, which this issue references directly as the motivating rule.
+
+### Acceptance Criteria ("Fixed" Means)
+
+A fix for this issue is complete when:
+
+1. **All 18 files** listed under "unused `<e:>` taglib declared" have the `<%@ taglib uri="owasp.encoder.jakarta.advanced" prefix="e" %>` line removed.
+2. **All 9 files** listed under "unused `import org.owasp.encoder.Encode`" have the corresponding `<%@ page import="org.owasp.encoder.Encode" %>` line removed.
+3. For every file touched, a manual/grep-based check confirms **zero remaining references** to `<e:forXxx>` or `Encode.forXxx()` in that file — i.e., the declaration was truly unused, not a case where the issue's file list was stale or incomplete.
+4. No functional or rendering change to any page — this is a pure dead-code removal, so page output before and after the change should be identical.
+5. **CI passes**, including the lint rule that flags direct `Encode.forXxx()` / `<e:forXxx>` usage (confirming no removal accidentally broke an actually-used encoding call, and no new violations were introduced).
+6. The PR diff contains **only deletions** of taglib/import lines — no reformatting, no unrelated edits, no changes to `carlos:encode` or `SafeEncode` call sites.
+
 
 ## Understanding the Issue
 
