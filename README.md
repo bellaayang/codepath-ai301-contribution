@@ -71,6 +71,7 @@ A JSP file should only declare the <e:> taglib or import org.owasp.encoder.Encod
 ### Environment Setup
 
 Setting up the CARLOS EMR devcontainer on an Apple Silicon Mac (M-series) in Japan presented several network-related challenges throughout the process.
+
 #### Primary Challenge: Network Connectivity
 The core issue was that Docker's container build process could not reliably fetch packages from ports.ubuntu.com/ubuntu-ports (Ubuntu's ARM64 package mirror). The noble/universe arm64 package index consistently failed to download, blocking the entire build. Simply switching proxy nodes or changing Docker Desktop's global proxy settings was insufficient because the proxy did not propagate into the container build environment.
 
@@ -81,6 +82,7 @@ yamlargs:
   https_proxy: http://172.22.42.236:7890
 
 Using host.docker.internal:7890 did not work because it failed to resolve on this network. Instead, the Mac's local LAN IP (172.22.42.236) was used directly.
+
 #### Secondary Challenge: Unstable Downloads in Dockerfile
 Several download steps in the Dockerfile were fragile under unstable network conditions:
 
@@ -117,15 +119,34 @@ After opening each affected file, I confirmed that:
 
 ### Analysis
 
-The root cause is an incomplete cleanup during an earlier migration. When the project moved from the raw OWASP Encoder API (<e:forXxx>, Encode.forXxx()) to the null-safe CARLOS wrappers (<carlos:encode>, SafeEncode.*), developers updated the actual encoding calls inside each JSP but did not go back and remove the now-orphaned taglib declarations and imports at the top of the file. Because JSP taglib/import directives don't cause compile errors just for being unused, this dead code was never flagged until someone manually audited the files — which is what issue #2680 asked for.
+The root cause is an incomplete cleanup during an earlier migration. When the project moved from the raw OWASP Encoder API (`<e:forXxx>`, `Encode.forXxx()`) to the null-safe CARLOS wrappers (`carlos:encode`, `SafeEncode.*`), developers updated the actual encoding calls inside each JSP but did not go back and remove the now-orphaned taglib declarations and imports at the top of the file. Because JSP taglib/import directives don't cause compile errors just for being unused, this dead code was never flagged until someone manually audited the files — which is what issue #2680 asked for.
+
+**Dating the migration with `git log`/`git blame`:**
+To confirm this theory rather than assume it, I ran `git log --follow -p -- src/main/webapp/WEB-INF/jsp/appointment/appointmentgrouprecords.jsp` and used `git blame` on the taglib/import lines in a few representative files. This showed:
+
+- The `<e:>` taglib declaration and `Encode` import lines in most affected files date back to a common commit range from the original OWASP Encoder integration, well before the CARLOS wrapper migration.
+- The lines that actually *use* encoding (e.g. `${carlos:encode(...)}` calls in the JSP body) were touched in a later, separate commit range — consistent with a batch migration commit that swapped call sites but left the directive lines at the top of each file untouched.
+- This confirms the issue's premise directly from history, rather than just from static inspection: these aren't declarations someone forgot to *add* a use for, they're declarations that *used* to have a use, which was removed out from under them.
+
+**Finding an analogous "Match" in the codebase:**
+Rather than treating this as a novel problem, I searched for whether this exact class of cleanup had already been done elsewhere in the repo. Using `git log --all --oneline --grep="unused taglib"` and `git log --all --oneline --grep="remove.*encoder"`, I found a prior commit that performed the identical cleanup pattern on the `patient/` JSP directory during an earlier phase of the same migration (removing unused `<e:>` declarations from `patientdetails.jsp` and related files, with no changes to file behavior). That commit's diff is a clean, minimal precedent — it touches only the directive line per file, with one commit covering a whole directory group — and it's the template I followed for scoping and structuring this PR (grouping by `appointment/` vs `schedule/`, one logical commit per group, no unrelated edits).
+
 
 ### Proposed Solution
 
 For each affected file, remove only the unused declaration line(s) — either the <%@ taglib uri="owasp.encoder.jakarta.advanced" prefix="e" %> line, the <%@ page import="org.owasp.encoder.Encode" %> line, or both if the file appears on both lists. No other code in the file is touched, since this is a pure dead-code removal with no behavioral change.
 
-### Implementation Plan
+### Edge Cases Considered
 
-Using UMPIRE framework (adapted):
+Before removing any declaration, I proactively checked for a few edge cases that could make a file's removal unsafe even though it appeared on the issue's list:
+
+1. **JSP includes / fragments:** Some JSPs (e.g. `scheduleflipview.jsp`) include other fragment files via `<jsp:include>` or `<%@ include %>`. It's possible for a taglib declared in a parent file to be relied upon implicitly by an included fragment that doesn't declare it itself. I checked each included fragment for `<e:forXxx>` usage, not just the top-level file, before removing the parent's taglib declaration.
+2. **Prefix collision with unrelated tags:** Since the taglib prefix is `e`, I grepped for any other use of `e:` as a prefix (e.g. a coincidentally similarly-named custom tag) to rule out a false-positive "unused" reading caused by a naive text search.
+3. **Commented-out code:** A few files contain commented-out JSP blocks referencing `<e:forXxx>` or `Encode.forXxx()`. These don't count as "in use" for compilation or lint purposes, but I noted them separately rather than treating a commented reference as equivalent to an active one, since removing the declaration is still safe but worth flagging in case a reviewer wants the dead comment cleaned up too (out of scope for this PR, noted only).
+4. **Files appearing on both lists:** For the seven files with both an unused taglib and an unused import (`appointmentgrouprecords.jsp`, `appointmenteditrepeatbooking.jsp`, `appointmentTypeList.jsp`, `scheduleDisplayTemplate.jsp`, `scheduledatepopup.jsp`, `scheduleflipview.jsp`, `scheduletemplateapplying.jsp`), I verified each declaration independently — a file being unused for the taglib doesn't guarantee the import is also unused, and vice versa.
+
+
+### Implementation Plan
 
 **Understand:** Multiple JSP files in the appointment/ and schedule/ directories still declare the legacy OWASP Encoder taglib (<%@ taglib uri="owasp.encoder.jakarta.advanced" prefix="e" %>) and/or import org.owasp.encoder.Encode directly, even though these files have already been migrated to use the null-safe CARLOS wrappers (<carlos:encode>, SafeEncode.*). These declarations are unused leftovers that create confusion and may trip future CI linting passes.
 
