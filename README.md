@@ -478,11 +478,12 @@ nitoring
 
 Run `git diff --name-only` before committing to catch any unintended file modifications earlier in the process.
 
+# Contribution [#3108]: (claude assist) Retire or gate the oscarRxFax mutation in FrmCustomedPDFServlet
 
-### Contribution Number: 3
-Student: Jinghan Yang
-Issue: https://github.com/carlos-emr/carlos/issues/3108#issuecomment-4904716881
-Status: Phase 1
+**Contribution Number:** 3
+**Student:** Jinghan Yang
+**Issue:** https://github.com/carlos-emr/carlos/issues/3108
+Status: Phase II In Progress
 
 ### Why I Chose This Issue
 
@@ -543,4 +544,69 @@ Because both paths were reachable through `service(...)`, the fax mutation could
 
 - `PrescriptionFaxServiceTest`
   - Added tests for fax file handling, PDF id validation, fax config matching, and avoiding file artifacts when validation fails.
+
+---
+
+## Reproduction Process
+
+### Environment Setup
+
+I set up CARLOS EMR locally from the `develop` branch and created a working branch named `fix-issue-3108`.
+
+The main challenge was understanding the legacy prescription PDF/fax flow. The issue involved both a legacy servlet and the newer CARLOS `*2Action` mutation-safety pattern, so I first traced the request path before making changes.
+
+Relevant files inspected:
+
+- `src/main/java/io/github/carlos_emr/carlos/form/pdfservlet/FrmCustomedPDFServlet.java`
+- `src/main/webapp/WEB-INF/web.xml`
+- `src/main/webapp/prescription/ViewScript2.jsp`
+- `src/test/java/io/github/carlos_emr/carlos/app/contract/MutatorActionGetRejectionContractTest.java`
+
+I confirmed that `/form/createcustomedpdf` was mapped to `FrmCustomedPDFServlet`, and that the servlet handled both normal PDF generation and the `__method=oscarRxFax` fax mutation inside `service(...)`.
+
+Because `service(...)` handles GET and POST the same way unless explicitly checked, the fax side effect was reachable through GET.
+
+### Steps to Reproduce
+
+1. Locate the servlet mapping in `web.xml`. The servlet named `pdfCustomedCreator` is mapped to: /form/createcustomedpdf
+
+2. Open FrmCustomedPDFServlet. 
+Before the fix, the servlet overrode: 
+service(HttpServletRequest req, HttpServletResponse res) 
+instead of separating read-only PDF generation from mutating fax submission.
+
+3. Find the fax branch selected by:
+__method=oscarRxFax
+
+4. Confirm that this branch performed side effects, including:
+- generating a prescription PDF
+- writing the PDF to disk
+- copying it into the fax directory
+- writing a tracking .txt file
+- creating and persisting a FaxJob
+- logging the fax job
+
+5. Observe that there was no GET/HEAD rejection before these side effects.
+A request shaped like this could reach the mutation path:
+GET /form/createcustomedpdf?__method=oscarRxFax&...
+
+6. Compare this with the CARLOS mutator contract.
+MutatorActionGetRejectionContractTest protects registered mutating *2Action classes, but FrmCustomedPDFServlet is a plain servlet, so it was not covered by that discovery scan.
+
+### Reproduction Evidence
+
+- **Commit showing reproduction:** https://github.com/bellaayang/carlos
+- **Screenshots/logs:** N/A
+- **My findings:** 
+
+The original servlet mixed two responsibilities:
+1. read-only prescription PDF generation
+2. mutating prescription fax submission
+
+Since the fax submission path lived inside service(...), GET and POST requests were dispatched identically. The mutation was selected by the request parameter __method=oscarRxFax, but there was no HTTP method gate before file writes or FaxJob persistence.
+
+I also found that the servlet was outside the existing *2Action GET/HEAD rejection contract, meaning the automated mutator contract test could not detect this legacy servlet mutation path.
+Based on this reproduction, I implemented the preferred fix by moving the fax mutation into a dedicated POST-only Struts action and leaving FrmCustomedPDFServlet responsible only for PDF rendering.
+
+---
 
