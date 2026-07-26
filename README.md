@@ -483,7 +483,7 @@ Run `git diff --name-only` before committing to catch any unintended file modifi
 **Contribution Number:** 3
 **Student:** Jinghan Yang
 **Issue:** https://github.com/carlos-emr/carlos/issues/3108
-Status: Phase II In Progress
+Status: Phase III In Progress
 
 ### Why I Chose This Issue
 
@@ -609,4 +609,397 @@ I also found that the servlet was outside the existing *2Action GET/HEAD rejecti
 Based on this reproduction, I implemented the preferred fix by moving the fax mutation into a dedicated POST-only Struts action and leaving FrmCustomedPDFServlet responsible only for PDF rendering.
 
 ---
+
+## Solution Approach
+
+### Analysis
+
+The root cause was that `FrmCustomedPDFServlet` mixed two very different responsibilities in one legacy servlet:
+
+1. rendering a prescription PDF
+2. submitting that prescription PDF as a fax job
+
+The servlet was mapped to: /form/createcustomedpdf, and it implemented the logic inside: service(HttpServletRequest req, HttpServletResponse res).
+
+In a servlet, service(...) handles GET, POST, HEAD, and other HTTP methods unless the code explicitly separates or rejects them. The legacy fax path was selected by a request parameter: __method=oscarRxFax.
+
+That meant the endpoint could behave like this:
+GET /form/createcustomedpdf?__method=oscarRxFax&...
+and still reach the same fax mutation logic as a POST request.
+
+This was a problem because the fax branch performed real side effects:
+- generated a prescription PDF
+- wrote the PDF to disk
+- copied the PDF into the fax directory
+- wrote a fax tracking .txt file
+- created and persisted a FaxJob
+- logged/audited the fax job
+
+In CARLOS EMR, mutating actions are expected to reject unsafe methods such as GET and HEAD before any side effect happens. The existing MutatorActionGetRejectionContractTest enforces this pattern for registered mutating *2Action classes, but FrmCustomedPDFServlet was a plain servlet, so it was outside that protection.
+
+The issue was therefore not only that the code was old or messy. The actual security/design problem was:
+A state-changing fax operation was reachable through a GET request and was not covered by the mutator GET/HEAD rejection contract.
+
+During the fix, I also found related hardening concerns:
+- the fax action needed an explicit _rx write privilege check before side effects
+- request-controlled file/path inputs needed validation through PathValidationUtils
+- fax artifact filenames needed to avoid stale/overwritten prescription PDFs
+- failures before FaxJob persistence needed cleanup of generated artifacts
+- failures after successful persistence must not be reported as fax creation failure, because the fax job may already send
+- direct-response actions must write controlled success/failure HTML and return NONE
+- dynamic values written to HTML needed CARLOS null-safe encoding
+- invalid clinic fax format and missing fax configuration needed distinguishable failure states
+- PDF generation needed safer handling for missing session context and document cleanup
+
+
+### Proposed Solution
+
+The preferred solution was to move the fax mutation out of FrmCustomedPDFServlet and into a dedicated POST-only Struts *2Action.
+
+The servlet should only keep its read-only PDF rendering responsibility. The fax submission should be handled by a proper mutating action that:
+- rejects GET/HEAD with 405 Method Not Allowed
+- includes the required Allow: POST header
+- checks authentication
+- checks _rx write privilege
+- generates the prescription PDF
+- validates fax-related inputs before side effects
+- writes fax artifacts safely
+- persists a FaxJob
+- returns controlled legacy HTML success/failure output
+- is covered by focused unit tests and the mutator contract test
+
+This approach matches the issue’s preferred direction because it removes the mutation from the PDF servlet instead of only adding a temporary method check inside the servlet.
+
+### Implementation Plan
+
+Using UMPIRE framework (adapted):
+
+**Understand:** 
+The problem is that /form/createcustomedpdf was responsible for both PDF generation and fax submission.
+
+The fax path was selected using: __method=oscarRxFax
+
+Because this logic lived inside FrmCustomedPDFServlet.service(...), GET and POST requests were dispatched identically. A GET request could therefore trigger fax side effects such as file writes and FaxJob persistence.
+
+The desired behavior is:
+- FrmCustomedPDFServlet only renders PDFs
+- fax submission goes through a mutating Struts *2Action
+- GET/HEAD cannot trigger the fax mutation
+- unauthorized users are rejected before side effects
+- invalid input is rejected before side effects
+successful fax jobs are queued safely and predictably
+
+**Match:** 
+Similar patterns already existed in the CARLOS EMR codebase:
+- New Struts actions use the *2Action naming convention.
+- Mutating *2Action classes reject GET/HEAD before side effects.
+- Mutating actions are registered in MutatorActionGetRejectionContractTest.
+- Direct-response actions write to the response and return ActionSupport.NONE.
+- User-controlled file paths are validated with PathValidationUtils.
+- User-visible dynamic HTML is encoded with CARLOS null-safe wrappers such as SafeEncode.forHtmlContent.
+- Security checks use SecurityInfoManager.hasPrivilege(...).
+- The implementation follows those project conventions rather than inventing a new routing or security pattern.
+
+**Plan:** 
+   - move PDF composition logic out of the servlet
+   - keep existing PDF rendering behavior stable
+   - make PDF generation reusable by both the servlet and the new fax action
+
+   Files:
+
+   - `PrescriptionPdfComposer.java`
+   - `FrmCustomedPDFServlet.java`
+
+2. Extract fax persistence/business logic into `PrescriptionFaxService`.
+
+   Purpose:
+
+   - isolate fax artifact writing and `FaxJob` persistence from HTTP routing
+   - validate fax inputs before file/DAO side effects
+   - use safe, unique server-generated artifact filenames
+   - keep fax job creation testable without going through the servlet/action
+
+   Files:
+
+   - `PrescriptionFaxService.java`
+   - `PrescriptionFaxViewModel.java`
+
+3. Add a dedicated POST-only action: `RxFaxPrescription2Action`.
+
+   Purpose:
+
+   - create the correct HTTP mutation boundary
+   - reject GET/HEAD before any side effect
+   - check authentication
+   - check `_rx` write privilege
+   - call `PrescriptionPdfComposer`
+   - call `PrescriptionFaxService`
+   - write controlled legacy HTML success/failure responses
+   - return `ActionSupport.NONE`
+
+   File:
+
+   - `RxFaxPrescription2Action.java`
+
+4. Register the new action in Struts prescription routing.
+
+   Purpose:
+
+   - expose the new fax endpoint through Struts
+   - separate the fax mutation route from the legacy PDF servlet route
+
+   File:
+
+   - `struts-prescription.xml`
+
+5. Update the JSP caller to submit fax requests to the new action.
+
+   Purpose:
+
+   - route fax submission away from `/form/createcustomedpdf`
+   - preserve normal PDF preview/rendering behavior for non-fax paths
+
+   File:
+
+   - `ViewScript2.jsp`
+
+6. Remove the fax branch from `FrmCustomedPDFServlet`.
+
+   Purpose:
+
+   - retire the `__method=oscarRxFax` mutation from the PDF servlet
+   - leave the servlet responsible only for read-only PDF generation
+
+   File:
+
+   - `FrmCustomedPDFServlet.java`
+
+7. Register the new action in the mutator GET/HEAD rejection contract.
+
+   Purpose:
+
+   - ensure the new mutating action rejects GET/HEAD
+   - make future regressions visible in automated tests
+
+   File:
+
+   - `MutatorActionGetRejectionContractTest.java`
+
+8. Add focused tests.
+
+   Purpose:
+
+   - verify GET/HEAD rejection
+   - verify unauthorized users are rejected before side effects
+   - verify missing privilege returns 403 before side effects
+   - verify invalid fax inputs are rejected before file writes
+   - verify missing/unsafe signature paths produce controlled failures
+   - verify PDF generation runtime failures do not escape to Struts
+   - verify successful fax job creation writes artifacts and persists `FaxJob`
+   - verify failed persistence cleans up artifacts
+   - verify audit failure after successful persistence does not falsely report fax failure
+
+   Files:
+
+   - `RxFaxPrescription2ActionTest.java`
+   - `PrescriptionFaxServiceTest.java`
+   - `PrescriptionPdfComposerTest.java`
+
+9. Harden edge cases found during review.
+
+   Purpose:
+
+   - avoid request-controlled artifact overwrite by adding server-generated UUIDs
+   - avoid default platform encoding for tracking files
+   - validate `pdfId`, `demographic_no`, destination fax, and clinic fax
+   - distinguish invalid clinic fax from missing fax configuration
+   - avoid `LoggedInInfo` null NPE in PDF QR-code logic
+   - guarantee PDF `Document` cleanup on rendering failures
+   - make direct-response action catch unexpected runtime failures and return controlled error HTML
+
+
+**Implement:** https://github.com/carlos-emr/carlos/pull/3124#pullrequestreview-4716846175
+```text
+fix-issue-3108
+```
+
+Key commits include:
+
+```text
+refactor: extract prescription PDF composer
+refactor: extract prescription fax service
+fix: add POST-only Rx fax prescription action
+fix: route Rx fax submission through Struts action
+fix: remove Rx fax mutation from PDF servlet
+test: register Rx fax action in mutator contract
+test: cover Rx fax prescription action
+fix: harden Rx fax file handling
+fix: validate Rx fax request before file writes
+fix: harden Rx fax error handling
+```
+
+The PR updates the legacy fax flow so that fax submission no longer happens inside `FrmCustomedPDFServlet`.
+
+**Review:** 
+- [x] The old servlet no longer contains the `oscarRxFax` mutation branch.
+- [x] The new fax action rejects non-POST requests before any side effect.
+- [x] The 405 response includes `Allow: POST`.
+- [x] Authentication is checked before PDF generation or fax job creation.
+- [x] `_rx` write privilege is checked before side effects.
+- [x] Dynamic HTML response values are encoded with `SafeEncode.forHtmlContent`.
+- [x] Request-controlled path/file inputs are validated with `PathValidationUtils`.
+- [x] Fax artifact filenames include a server-generated UUID.
+- [x] Existing artifacts are not overwritten.
+- [x] Invalid input is rejected before file writes and DAO persistence.
+- [x] Failed persistence cleans up generated artifacts.
+- [x] Audit/logging failure after successful persistence does not falsely report fax creation failure.
+- [x] Direct-response action returns `ActionSupport.NONE`.
+- [x] PDF generation failures return controlled failure HTML instead of Struts raw error pages.
+- [x] `PrescriptionPdfComposer` handles missing session context in QR-code logic.
+- [x] PDF `Document` cleanup is handled on rendering failure.
+- [x] Tests cover happy path, GET/HEAD rejection, authorization failure, invalid input, and failure cleanup.
+- [x] Unrelated local files such as `.agents/`, `.codex/`, `.claude/`, and `AGENTS.md` are not included in commits.
+
+
+**Evaluate:** 
+I verified the fix with focused Maven tests and compilation.
+
+Commands used:
+
+```bash
+mvn -Dtest=PrescriptionFaxServiceTest,PrescriptionPdfComposerTest,RxFaxPrescription2ActionTest,MutatorActionGetRejectionContractTest,FaxSenderTest test
+```
+
+Expected result:
+
+```text
+BUILD SUCCESS
+Tests run: 93, Failures: 0, Errors: 0, Skipped: 0
+```
+
+I also verified compilation:
+
+```bash
+mvn -DskipTests compile
+```
+
+Expected result:
+
+```text
+BUILD SUCCESS
+```
+
+Additional checks:
+
+```bash
+git diff --check
+```
+
+Expected result:
+
+```text
+(no output)
+```
+
+The most important behavioral checks are:
+
+1. GET/HEAD cannot trigger fax mutation.
+
+   The new action rejects unsafe methods before calling PDF generation or fax service logic.
+
+2. Unauthorized users cannot trigger side effects.
+
+   Unauthenticated requests return `401`, and users without `_rx` write privilege return `403`.
+
+3. The read-only PDF servlet path remains available.
+
+   `FrmCustomedPDFServlet` still renders PDFs, but no longer performs fax submission.
+
+4. Fax artifacts are written only after validation.
+
+   Destination fax, clinic fax, demographic number, PDF id, and fax configuration are validated before file writes and `FaxJob` persistence.
+
+5. Failure paths are controlled.
+
+   Missing signatures, unsafe signature paths, invalid inputs, PDF generation errors, persistence failures, and unexpected runtime failures all return controlled failure responses instead of raw Struts/CARLOS error pages.
+
+6. Successful persisted fax jobs are not falsely reported as failures.
+
+   If audit logging fails after `FaxJob` persistence, the service still returns success because the fax job is already queued and may send. This avoids duplicate fax submissions caused by misleading user feedback.
+
+---
+
+## Testing Strategy
+
+### Unit Tests
+
+- [ ] Test case 1: [Description]
+- [ ] Test case 2: [Description]
+- [ ] Test case 3: [Description]
+
+### Integration Tests
+
+- [ ] Integration scenario 1
+- [ ] Integration scenario 2
+
+### Manual Testing
+
+[What you tested manually and results]
+
+---
+
+## Implementation Notes
+
+### Week [X] Progress
+
+[What you built this week, challenges faced, decisions made]
+
+### Week [Y] Progress
+
+[Continue documenting as you work]
+
+### Code Changes
+
+- **Files modified:** [List]
+- **Key commits:** [Links to important commits]
+- **Approach decisions:** [Why you chose certain approaches]
+
+---
+
+## Pull Request
+
+**PR Link:** [GitHub PR URL when submitted]
+
+**PR Description:** [Draft or final PR description - much of the content above can be adapted]
+
+**Maintainer Feedback:**
+- [Date]: [Summary of feedback received]
+- [Date]: [How you addressed it]
+
+**Status:** [Awaiting review / Iterating / Approved / Merged]
+
+---
+
+## Learnings & Reflections
+
+### Technical Skills Gained
+
+[What you learned technically]
+
+### Challenges Overcome
+
+[What was hard and how you solved it]
+
+### What I'd Do Differently Next Time
+
+[Reflection on your process]
+
+---
+
+## Resources Used
+
+- [Link to helpful documentation]
+- [Tutorial or Stack Overflow post that helped]
+- [GitHub issues or discussions that helped]
+
 
